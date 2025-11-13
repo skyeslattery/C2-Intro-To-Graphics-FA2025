@@ -1,5 +1,5 @@
 import numpy as np
-
+from PIL import Image
 
 def vec(list):
     """Handy shorthand to make a single-precision float array."""
@@ -23,6 +23,14 @@ def from_srgb8(img_srgb8):
 def to_srgb8(img):
     return np.clip(np.round(255.0 * to_srgb(img)), 0, 255).astype(np.uint8)
 
+def load_image(filename):
+    try:
+        pil_img = Image.open(filename).convert('RGB')
+        img = np.array(pil_img, dtype=np.float32) / 255.0
+        return img
+    except FileNotFoundError:
+        print(f"Error: Texture file not found: {filename}")
+        return np.array([[[0.0, 0.0, 0.0]]], dtype=np.float32)
 
 def read_obj(f):
     """Read a file in the Wavefront OBJ file format.
@@ -90,4 +98,21 @@ def read_obj_triangles(f):
     (i, p, n, t) = read_obj(f)
     return p[i,:]
 
+def read_obj_triangles_with_uvs(f):
+    """Read an OBJ file and return vertices AND texture coordinates for each triangle.
 
+    Argument is an open file.
+    Returns a tuple:
+        (vs_list, uvs_list)
+        vs_list: (n, 3, 3) array of vertex positions
+        uvs_list: (n, 3, 2) array of texture coordinates
+    """
+
+    (i, p, n, t) = read_obj(f)
+    assert i.shape[1] == 3, "OBJ file does not contain only triangles"
+    
+    if t.shape[0] == 0:
+        print("Warning: OBJ file has no texture coordinates (vt). Returning empty UVs.")
+        return p[i,:], np.zeros((i.shape[0], 3, 2), dtype=np.float32)
+        
+    return p[i,:], t[i,:]

@@ -87,11 +87,6 @@ class Sphere:
         self.radius = radius
         self.material = material
 
-    def get_bbox(self):
-        """Return the AABB for this sphere."""
-        r_vec = vec([self.radius, self.radius, self.radius])
-        return AABB(self.center - r_vec, self.center + r_vec)
-
     def intersect(self, ray):
         """Computes the first (smallest t) intersection between a ray and this sphere.
 
@@ -134,17 +129,6 @@ class Triangle:
         """
         self.vs = vs
         self.material = material
-        self.edge_1 = self.vs[1] - self.vs[0]
-        self.edge_2 = self.vs[2] - self.vs[0]
-        self.normal = normalize(np.cross(self.edge_1, self.edge_2))
-
-    def get_bbox(self):
-        """Return the AABB for this triangle."""
-        bbox = AABB()
-        bbox.grow(self.vs[0])
-        bbox.grow(self.vs[1])
-        bbox.grow(self.vs[2])
-        return bbox
 
     def intersect(self, ray):
         """Computes the intersection between a ray and this triangle, if it exists.
@@ -157,8 +141,11 @@ class Triangle:
         v_a = self.vs[0]
         v_b = self.vs[1]
         v_c = self.vs[2]
-        temp_vec = np.cross(ray.direction, self.edge_2)
-        det = np.dot(self.edge_1, temp_vec)
+        edge_1 = v_b - v_a
+        edge_2 = v_c - v_a
+
+        temp_vec = np.cross(ray.direction, edge_2)
+        det = np.dot(edge_1, temp_vec)
 
         if -1e-8 < det and det < 1e-8:
             return no_hit
@@ -170,148 +157,21 @@ class Triangle:
         if u < 0 or u > 1:
             return no_hit
 
-        temp_vec2 = np.cross(s, self.edge_1)
+        temp_vec2 = np.cross(s, edge_1)
         v = np.dot(ray.direction, temp_vec2) * inverse_det
 
         if v < 0 or u + v > 1:
             return no_hit
 
-        t = np.dot(self.edge_2, temp_vec2) * inverse_det
+        t = np.dot(edge_2, temp_vec2) * inverse_det
 
         if t > ray.start and t < ray.end:
             point = ray.origin + t * ray.direction
-            return Hit(t, point, self.normal, self.material)
+            normal = normalize(np.cross(edge_1, edge_2))
+            return Hit(t, point, normal, self.material)
 
         return no_hit
 
-class BVHNode:
-    def __init__(self, bbox, left=None, right=None, objects=None):
-        """Create a BVH node."""
-        self.bbox = bbox
-        self.left = left
-        self.right = right
-        self.objects = objects
-
-    def intersect(self, ray):
-        """Intersect the ray with the BVH tree."""
-        if not self.bbox.intersect(ray):
-            return no_hit
-
-        if self.objects is not None:
-            closest_hit = no_hit
-            for obj in self.objects:
-                hit = obj.intersect(ray)
-                if hit.t < closest_hit.t and hit.t > ray.start:
-                    closest_hit = hit
-            return closest_hit
-
-        hit_left = self.left.intersect(ray)
-        hit_right = self.right.intersect(ray)
-
-        if hit_left.t < hit_right.t:
-            return hit_left
-        else:
-            return hit_right
-
-def get_bbox_center(obj):
-    """Helper to get the center of an object's AABB."""
-    bbox = obj.get_bbox()
-    return (bbox.min + bbox.max) * 0.5
-
-def build_bvh(objects):
-    """Recursively build the BVH tree."""
-    
-    # Base Cases
-    if len(objects) == 0:
-        return BVHNode(AABB(vec([0,0,0]), vec([0,0,0])))
-    
-    if len(objects) == 1:
-        obj = objects[0]
-        return BVHNode(bbox=obj.get_bbox(), objects=[obj])
-    
-    if len(objects) == 2:
-        left_child = build_bvh([objects[0]])
-        right_child = build_bvh([objects[1]])
-        
-        total_bbox = AABB()
-        total_bbox.grow_box(left_child.bbox)
-        total_bbox.grow_box(right_child.bbox)
-        
-        return BVHNode(bbox=total_bbox, left=left_child, right=right_child)
-
-    
-    total_bbox = AABB()
-    centers = []
-    for obj in objects:
-        bbox = obj.get_bbox()
-        total_bbox.grow_box(bbox)
-        centers.append((bbox.min + bbox.max) * 0.5)
-
-    extents = total_bbox.max - total_bbox.min
-    split_axis = np.argmax(extents)
-
-    zipped = sorted(zip(objects, centers), key=lambda item: item[1][split_axis])
-    objects, centers = zip(*zipped)
-    
-    mid = len(objects) // 2
-    left_objects = objects[:mid]
-    right_objects = objects[mid:]
-
-    left_child = build_bvh(left_objects)
-    right_child = build_bvh(right_objects)
-
-    return BVHNode(bbox=total_bbox, left=left_child, right=right_child)
-
-class AABB:
-    def __init__(self, min_point=vec([np.inf, np.inf, np.inf]), max_point=vec([-np.inf, -np.inf, -np.inf])):
-        """Create an Axis-Aligned Bounding Box."""
-        self.min = min_point
-        self.max = max_point
-
-    def grow(self, point):
-        """Grow the box to include a new point."""
-        self.min = np.minimum(self.min, point)
-        self.max = np.maximum(self.max, point)
-
-    def grow_box(self, other_box):
-        """Grow the box to include another AABB."""
-        self.min = np.minimum(self.min, other_box.min)
-        self.max = np.maximum(self.max, other_box.max)
-        
-    def get_center(self):
-        """Get the center point of the AABB."""
-        return (self.min + self.max) * 0.5
-
-    def intersect(self, ray):
-        """Check if the ray intersects the AABB using the 'Slab Test'."""
-        tmin = ray.start
-        tmax = ray.end
-
-        for i in range(3):
-            dir_i = ray.direction[i]
-            orig_i = ray.origin[i]
-
-            # If the ray is parallel to the slab, check origin against bounds
-            if np.abs(dir_i) < 1e-12:
-                if orig_i < self.min[i] or orig_i > self.max[i]:
-                    return False
-                else:
-                    continue
-
-            inv = 1.0 / dir_i
-            t0 = (self.min[i] - orig_i) * inv
-            t1 = (self.max[i] - orig_i) * inv
-
-            if t0 > t1:
-                t0, t1 = t1, t0
-
-            tmin = max(tmin, t0)
-            tmax = min(tmax, t1)
-
-            if tmin > tmax:
-                return False
-
-        return True
 
 class Camera:
 
@@ -448,11 +308,6 @@ class Scene:
         self.surfs = surfs
         self.bg_color = bg_color
 
-        if len(self.surfs) > 0:
-            self.bvh_root = build_bvh(self.surfs)
-        else:
-            self.bvh_root = None
-
     def intersect(self, ray):
         """Computes the first (smallest t) intersection between a ray and the scene.
 
@@ -461,10 +316,15 @@ class Scene:
         Return:
           Hit -- the hit data
         """
-        if self.bvh_root is None:
-            return no_hit
+        closest_hit = no_hit
+    
+        for surf in self.surfs:
+            hit = surf.intersect(ray)
             
-        return self.bvh_root.intersect(ray)
+            if hit.t < closest_hit.t and hit.t > ray.start:
+                closest_hit = hit
+                
+        return closest_hit
 
 
 MAX_DEPTH = 4
