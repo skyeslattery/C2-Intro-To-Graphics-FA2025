@@ -226,6 +226,24 @@ class BVHNode:
             return hit_left
         else:
             return hit_right
+        
+    def any_intersect(self, ray):
+        """Return True if any object intersects ray within [start,end]. Fast early exit."""
+        if not self.bbox.intersect(ray):
+            return False
+
+        if self.objects is not None:
+            for obj in self.objects:
+                hit = obj.intersect(ray)
+                if hit.t < np.inf and hit.t > ray.start and hit.t < ray.end:
+                    return True
+            return False
+
+        if self.left is not None and self.left.any_intersect(ray):
+            return True
+        if self.right is not None and self.right.any_intersect(ray):
+            return True
+        return False
 
 def get_bbox_center(obj):
     """Helper to get the center of an object's AABB."""
@@ -398,7 +416,7 @@ class PointLight:
         
         light_vec = normalize(light_vec_full)
 
-        # part 5: shadow ray, basically just check if anything is between light and hit point
+        # part 5: shadow ray — use fast occlusion test (no full Hit needed)
         dist = np.sqrt(dist_sq)
         eps = 1e-5
         shadow_ray = Ray(
@@ -407,8 +425,7 @@ class PointLight:
             start=eps,
             end=dist - eps
         )
-        blocker = scene.intersect(shadow_ray) 
-        if blocker.t < np.inf:
+        if hasattr(scene, 'is_occluded') and scene.is_occluded(shadow_ray):
             return np.zeros(3)
 
         normal_hit = hit.normal
@@ -421,7 +438,6 @@ class PointLight:
         specular  = k_s * (max(0.0, np.dot(normal_hit, halfway_vec)) ** p)
 
         return (k_d + specular) * intensity_attenuated * diffuse
-
 
 class AmbientLight:
 
@@ -476,6 +492,12 @@ class Scene:
             return no_hit
             
         return self.bvh_root.intersect(ray)
+    
+    def is_occluded(self, ray):
+        """Return True if any surface blocks the ray (fast boolean)."""
+        if self.bvh_root is None:
+            return False
+        return self.bvh_root.any_intersect(ray)
 
 
 MAX_DEPTH = 4

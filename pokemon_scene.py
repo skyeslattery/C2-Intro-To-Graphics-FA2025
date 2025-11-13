@@ -12,9 +12,9 @@ else:
     from ray_old import *
 
 
-lucario_mat = Material(
+pokemon_mat = Material(
     k_d=vec([1.0, 1.0, 1.0]),
-    texture_filename="lucario_texture.png",
+    texture_filename="grey-texture.png",
     k_s=vec([0.1, 0.1, 0.1]),  # specular highlights
     p=100.0
 )
@@ -36,17 +36,17 @@ ball_mat = Material(
     k_a=vec([0.05, 0.1, 0.2])
 )
 
-lucario_mat.k_d = vec([0.02, 0.04, 0.08])  # dark blue base tint
-lucario_mat.k_s = vec([0.02, 0.02, 0.02])  # very low specular highlights
-lucario_mat.k_m = vec([0.0, 0.0, 0.0])     # no mirror reflections
+pokemon_mat.k_d = vec([0.02, 0.04, 0.08])  # dark blue base tint
+pokemon_mat.k_s = vec([0.02, 0.02, 0.02])  # very low specular highlights
+pokemon_mat.k_m = vec([0.0, 0.0, 0.0])     # no mirror reflections
 
 
-lucario_mat.k_d = vec([0.003, 0.006, 0.012])
-lucario_mat.k_s = vec([0.003, 0.003, 0.003])
-lucario_mat.k_m = vec([0.0, 0.0, 0.0])
+pokemon_mat.k_d = vec([0.003, 0.006, 0.012])
+pokemon_mat.k_s = vec([0.003, 0.003, 0.003])
+pokemon_mat.k_m = vec([0.0, 0.0, 0.0])
 
 
-vs_list_raw, uvs_list = read_obj_triangles_with_uvs(open("lucario.obj"))
+vs_list_raw, uvs_list = read_obj_triangles_with_uvs(open("Lucario2.obj"))
 
 vs_list = 0.6 * vs_list_raw + vec([0, -0.05, -0.2])
 all_verts = np.vstack(vs_list)
@@ -57,7 +57,7 @@ extents = bbox_max - bbox_min
 radius = np.linalg.norm(extents) * 0.5
 
 
-surfs = [Triangle(vs, lucario_mat, uvs) for vs, uvs in zip(vs_list, uvs_list)]
+surfs = [Triangle(vs, pokemon_mat, uvs) for vs, uvs in zip(vs_list, uvs_list)]
 
 # ground plane (a big sphere)
 surfs.append(Sphere(vec([0, -40.1, 0]), 40.0, gray_mat))
