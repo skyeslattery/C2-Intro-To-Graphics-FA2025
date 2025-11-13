@@ -36,7 +36,7 @@ class Ray:
 
 class Material:
 
-    def __init__(self, k_d, k_s=0., p=20., k_m=0., k_a=None):
+    def __init__(self, k_d, k_s=0., p=20., k_m=0., k_a=None, texture_filename=None):
         """Create a new material with the given parameters.
 
         Parameters:
@@ -51,11 +51,13 @@ class Material:
         self.p = p
         self.k_m = k_m
         self.k_a = k_a if k_a is not None else k_d
+        self.texture_map = None
+        if texture_filename:
+            self.texture_map = load_image(texture_filename)
 
 
 class Hit:
-
-    def __init__(self, t, point=None, normal=None, material=None):
+    def __init__(self, t, point=None, normal=None, material=None, uv=None):
         """Create a Hit with the given data.
 
         Parameters:
@@ -63,11 +65,13 @@ class Hit:
           point : (3,) -- the 3D point where the intersection happens
           normal : (3,) -- the 3D outward-facing unit normal to the surface at the hit point
           material : (Material) -- the material of the surface
+          uv : (2,) -- the interpolated texture coordinate at the hit point
         """
         self.t = t
         self.point = point
         self.normal = normal
         self.material = material
+        self.uv = uv
 
 # Value to represent absence of an intersection
 no_hit = Hit(np.inf)
@@ -125,15 +129,17 @@ class Sphere:
 
 class Triangle:
 
-    def __init__(self, vs, material):
+    def __init__(self, vs, material, uvs=None):
         """Create a triangle from the given vertices.
 
         Parameters:
           vs (3,3) -- an arry of 3 3D points that are the vertices (CCW order)
           material : Material -- the material of the surface
+          uvs (3,2) -- an array of 3 2D texture coordinates for the vertices
         """
         self.vs = vs
         self.material = material
+        self.uvs = uvs
         self.edge_1 = self.vs[1] - self.vs[0]
         self.edge_2 = self.vs[2] - self.vs[0]
         self.normal = normalize(np.cross(self.edge_1, self.edge_2))
@@ -180,7 +186,15 @@ class Triangle:
 
         if t > ray.start and t < ray.end:
             point = ray.origin + t * ray.direction
-            return Hit(t, point, self.normal, self.material)
+            
+            hit_uv = None
+            if self.uvs is not None:
+                w_bary = 1.0 - u - v
+                u_bary = v
+                v_bary = u
+                hit_uv = w_bary * self.uvs[0] + u_bary * self.uvs[1] + v_bary * self.uvs[2]
+
+            return Hit(t, point, self.normal, self.material, uv=hit_uv)
 
         return no_hit
 
@@ -368,13 +382,14 @@ class PointLight:
         self.position = position
         self.intensity = intensity
 
-    def illuminate(self, ray, hit, scene):
+    def illuminate(self, ray, hit, scene, k_a, k_d, k_s, p):
         """Compute the shading at a surface point due to this light.
 
         Parameters:
           ray : Ray -- the ray that hit the surface
           hit : Hit -- the hit data
           scene : Scene -- the scene, for shadow rays
+          k_a, k_d, k_s, p : Material properties -- effective material properties at the hit point
         Return:
           (3,) -- the light reflected from the surface
         """
@@ -387,7 +402,7 @@ class PointLight:
         dist = np.sqrt(dist_sq)
         eps = 1e-5
         shadow_ray = Ray(
-            origin=hit.point + eps * hit.normal,  #avoid self-hit
+            origin=hit.point + eps * hit.normal,
             direction=light_vec,
             start=eps,
             end=dist - eps
@@ -399,10 +414,6 @@ class PointLight:
         normal_hit = hit.normal
         view_vec = normalize(ray.origin - hit.point)
         halfway_vec = normalize(light_vec + view_vec)
-        
-        k_d = hit.material.k_d
-        k_s = hit.material.k_s
-        p = hit.material.p
         
         intensity_attenuated = self.intensity / dist_sq
         
@@ -422,17 +433,17 @@ class AmbientLight:
         """
         self.intensity = intensity
 
-    def illuminate(self, ray, hit, scene):
+    def illuminate(self, ray, hit, scene, k_a, k_d, k_s, p):
         """Compute the shading at a surface point due to this light.
 
         Parameters:
           ray : Ray -- the ray that hit the surface
           hit : Hit -- the hit data
           scene : Scene -- the scene, for shadow rays
+          k_a, k_d, k_s, p : Material properties -- effective material properties at the hit point
         Return:
           (3,) -- the light reflected from the surface
         """
-        k_a = hit.material.k_a
         return k_a * self.intensity
 
 
@@ -485,12 +496,36 @@ def shade(ray, hit, scene, lights, depth=0):
     """
     color = np.array([0.0, 0.0, 0.0])
 
-    for light in lights:
-        color += light.illuminate(ray, hit, scene)
+    tex_color = None
+    if hit.material.texture_map is not None and hit.uv is not None:
+        tex_map = hit.material.texture_map
+        uv = hit.uv
+        u_coord = uv[0] % 1.0
+        v_coord = (1.0 - uv[1]) % 1.0
+        
+        tex_h, tex_w, _ = tex_map.shape
+        
+        x = int(u_coord * tex_w)
+        y = int(v_coord * tex_h)
+        
+        x = min(max(x, 0), tex_w - 1)
+        y = min(max(y, 0), tex_h - 1)
+        
+        tex_color = tex_map[y, x]
+  
+    k_d_eff = tex_color if tex_color is not None else hit.material.k_d
+    k_s_eff = hit.material.k_s
+    p_eff = hit.material.p
+    k_m_eff = hit.material.k_m
+    
+    k_a_eff = hit.material.k_a
+    if tex_color is not None and np.array_equal(hit.material.k_a, hit.material.k_d):
+        k_a_eff = tex_color
 
-    # Part 7 - if material is mirror reflective, trace a reflection ray then find intersection and color the surface
-    k_m = hit.material.k_m
-    if np.any(k_m > 0) and depth < MAX_DEPTH:
+    for light in lights:
+        color += light.illuminate(ray, hit, scene, k_a_eff, k_d_eff, k_s_eff, p_eff)
+
+    if np.any(k_m_eff > 0) and depth < MAX_DEPTH:
         hit_norm = hit.normal
         direction_norm = normalize(ray.direction)
         reflection_direction = normalize(direction_norm - 2.0 * np.dot(direction_norm, hit_norm) * hit_norm)
@@ -503,7 +538,7 @@ def shade(ray, hit, scene, lights, depth=0):
         else:
             reflection_color = scene.bg_color
 
-        color += np.array(k_m) * reflection_color
+        color += np.array(k_m_eff) * reflection_color
         
     return color
 
