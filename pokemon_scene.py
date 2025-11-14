@@ -33,7 +33,11 @@ ball_mat = Material(
     k_s=vec([0.8, 0.8, 0.8]),  # white highlight
     p=200.0,
     k_m=vec([0.8, 0.8, 0.8]),
-    k_a=vec([0.05, 0.1, 0.2])
+    k_a=vec([20.0, 20.0, 20.0]),
+    # Strong blue emissive term so the ball surface visibly glows
+    # (emissive contribution is surface-only in this renderer)
+    k_e=vec([0.0, 0.0, 2.5]),
+    ior=1.33
 )
 
 pokemon_mat.k_d = vec([0.02, 0.04, 0.08])  # dark blue base tint
@@ -86,7 +90,7 @@ def make_area_lights(center, radius, total_intensity, n=3):
 # key light above model
 key_center = center + vec([0.0, extents[1] * 0.9, radius * 1.0])
 # very dim
-key_intensity = vec([0.2, 0.2, 0.25])  # total intensity for the area light
+key_intensity = vec([0.5, 0.5, 0.4])  # total intensity for the area light
 key_lights = make_area_lights(key_center, radius * 0.6, key_intensity, n=3)
 
 # very faint rim/back light
