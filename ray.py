@@ -472,18 +472,18 @@ class Scene:
 
     def __init__(self, surfs, bg_color=vec([0.2,0.3,0.5])):
         """Create a scene containing the given objects.
-
-        Parameters:
-          surfs : [Sphere, Triangle] -- list of the surfaces in the scene
-          bg_color : (3,) -- RGB color that is seen where no objects appear
+        ...
         """
         self.surfs = surfs
         self.bg_color = bg_color
+        
+        self.lights = []
+        for surf in self.surfs:
+            if np.any(surf.material.k_e > 0):
+                self.lights.append(surf)
 
         if len(self.surfs) > 0:
             self.bvh_root = build_bvh(self.surfs)
-        else:
-            self.bvh_root = None
 
     def intersect(self, ray):
         """Computes the first (smallest t) intersection between a ray and the scene.
@@ -504,16 +504,32 @@ class Scene:
             return False
         return self.bvh_root.any_intersect(ray)
 
+MAX_DEPTH = 8 # max recursion depth
+EPSILON = 1e-4 # for offsetting rays
 
-MAX_DEPTH = 8
-EPSILON = 1e-4 # A consistent epsilon for offsetting rays
+def sample_point_on_sphere(sphere):
+    """
+    Generates a random point on the surface of a sphere, its normal, 
+    and the probability density (PDF) of that sample w.r.t. surface area.
+    """
+    z = 1.0 - 2.0 * np.random.rand()
+    r = np.sqrt(max(0.0, 1.0 - z*z))
+    phi = 2.0 * np.pi * np.random.rand()
+    x = r * np.cos(phi)
+    y = r * np.sin(phi)
+    
+    local_normal = vec([x, y, z]) # This is our normal
+    point = sphere.center + local_normal * sphere.radius
+    
+    pdf_area = 1.0 / (4.0 * np.pi * sphere.radius**2)
+    
+    return point, local_normal, pdf_area
 
 def get_texture_color(texture_map, uv):
-    """Helper to get color from a texture map given UVs."""
+    """helper to get color from a texture map given uvs."""
     if texture_map is None or uv is None:
         return None
     
-    # Handle texture wrapping and V-coordinate flip
     uv_u = uv[0] % 1.0
     uv_v = (1.0 - uv[1]) % 1.0 
     
@@ -523,152 +539,178 @@ def get_texture_color(texture_map, uv):
     
     return texture_map[tex_y, tex_x]
 
-def shade(ray, hit, scene, lights, depth=0):
-    """
-    Compute shading for a ray-surface intersection.
-    This version uses a cleaner, more standard algorithm for refraction.
-    """
+def create_orthonormal_basis(n):
+    """create a local coordinate system around the normal."""
+    if np.abs(n[1]) < 0.999:
+        a = vec([0, 1, 0])
+    else:
+        a = vec([1, 0, 0])
     
-    # Stop recursion at max depth
+    u = normalize(np.cross(a, n))
+    v = np.cross(n, u)
+    return u, v
+
+def sample_cosine_hemisphere(n, u, v):
+    """generate a random direction in a cosine-weighted hemisphere."""
+    r1 = 2.0 * np.pi * np.random.rand()
+    r2 = np.random.rand()
+    r2_sqrt = np.sqrt(r2)
+    
+    w = n
+    direction = (
+        u * np.cos(r1) * r2_sqrt +
+        v * np.sin(r1) * r2_sqrt +
+        w * np.sqrt(1.0 - r2)
+    )
+    return normalize(direction)
+
+def trace_path(ray, scene, depth, is_specular=False):
     if depth >= MAX_DEPTH:
         return np.zeros(3)
 
-    # --- 1. Setup ---
+    hit = scene.intersect(ray)
+    if hit.t == np.inf:
+        return scene.bg_color
+
     mat = hit.material
-    hit_point = hit.point
-    hit_norm = hit.normal
-    
-    # --- 2. Get Effective Material Properties (from Textures) ---
-    tex_color = get_texture_color(mat.texture_map, hit.uv)
-    emit_color = get_texture_color(mat.emission_map, hit.uv)
-    
-    k_d_eff = tex_color if tex_color is not None else mat.k_d
-    k_a_eff = mat.k_a
-    if tex_color is not None and np.array_equal(mat.k_a, mat.k_d):
-        k_a_eff = tex_color # Allow ambient to match diffuse texture
-        
-    k_e_eff = mat.k_e + (emit_color if emit_color is not None else 0.0)
-    
-    # --- 3. Local Illumination (Emission + Phong/Blinn-Phong) ---
-    
-    # Start with emission
-    # Ensure color is always a (3,) array, even if k_e_eff is a scalar
-    color = np.array([0.0, 0.0, 0.0]) + k_e_eff
-    
-    # Add diffuse and specular from lights
-    for light in lights:
-        color += light.illuminate(ray, hit, scene, k_a_eff, k_d_eff, mat.k_s, mat.p)
+    x = hit.point
+    n = hit.normal
+    wo = -ray.direction
+    nl = n if np.dot(wo, n) > 0 else -n
 
-    # --- 4. Recursive Rays (Reflection & Refraction) ---
-    
-    # Vector from surface point *to* the eye
-    view_vec = normalize(ray.origin - hit_point)
-    # Vector *from* the eye *into* the surface
-    v_incoming = normalize(-view_vec)
-    
-    # --- Mirror Reflection (k_m) ---
-    k_m_eff = np.array(mat.k_m)
-    if np.any(k_m_eff > 0):
-        refl_dir = normalize(2.0 * np.dot(view_vec, hit_norm) * hit_norm - view_vec)
-        refl_ray = Ray(hit_point + EPSILON * refl_dir, refl_dir, start=EPSILON)
-        
-        refl_hit = scene.intersect(refl_ray)
-        refl_color = shade(refl_ray, refl_hit, scene, lights, depth + 1) if refl_hit.t < np.inf else scene.bg_color
-        
-        color += k_m_eff * refl_color
-
-    # --- Transmission / Refraction (k_t) ---
-    k_t_eff = np.array(mat.k_t)
-    if np.any(k_t_eff > 0):
-        
-        cos_in = np.dot(v_incoming, hit_norm)
-        
-        eta1 = 1.0    # IOR of current medium (default: air)
-        eta2 = mat.ior  # IOR of next medium
-        n_incident = hit_norm # Normal to use for calculations
-
-        if cos_in < 0:
-            # Ray is ENTERING the medium (e.g., air -> glass)
-            # - cos_in is negative, make it positive
-            # - IORs are correct (1.0 -> 1.5)
-            # - Normal is correct
-            cos_in = -cos_in
+    # emission
+    emitted = mat.k_e
+    if np.any(emitted > 0):
+        if depth == 0 or is_specular:
+            return emitted
         else:
-            # Ray is EXITING the medium (e.g., glass -> air)
-            # - cos_in is positive, which is fine
-            # - Swap IORs (1.5 -> 1.0)
-            # - Flip the normal to point "inward"
-            eta1, eta2 = eta2, eta1
-            n_incident = -hit_norm
-            
-        eta = eta1 / eta2
-        
-        # Schlick's approximation for Fresnel reflectance
-        R0 = ((eta1 - eta2) / (eta1 + eta2))**2
-        reflectance = R0 + (1.0 - R0) * ((1.0 - cos_in)**5)
-        
-        # Check for Total Internal Reflection (TIR)
-        k = 1.0 - eta * eta * (1.0 - cos_in * cos_in)
-        
+            return np.zeros(3)
+
+    kd = np.mean(mat.k_d)
+    km = np.mean(mat.k_m)
+    kt = np.mean(mat.k_t)
+    s = kd + km + kt
+    if s < 1e-6:
+        return emitted
+
+    pd = kd / s
+    pm = km / s
+    pt = kt / s
+
+    r = np.random.rand()
+
+    # glass (dielectric)
+    if r < pt:
+        wi = ray.direction
+        cos_i = np.dot(-wi, nl)
+        entering = cos_i > 0
+
+        eta_i = 1.0
+        eta_t = mat.ior
+        if not entering:
+            eta_i, eta_t = eta_t, eta_i
+
+        eta = eta_i / eta_t
+        R0 = ((eta_i - eta_t) / (eta_i + eta_t))**2
+        F = R0 + (1 - R0) * (1 - cos_i)**5
+        k = 1 - eta*eta*(1 - cos_i*cos_i)
+
+        refl = normalize(wi - 2 * np.dot(wi, nl) * nl)
+
         if k < 0:
-            # Total Internal Reflection: Only trace reflection
-            refl_dir = v_incoming - 2.0 * np.dot(v_incoming, n_incident) * n_incident
-            refl_ray = Ray(hit_point + EPSILON * refl_dir, normalize(refl_dir), start=EPSILON)
-            
-            refl_hit = scene.intersect(refl_ray)
-            refl_color = shade(refl_ray, refl_hit, scene, lights, depth + 1) if refl_hit.t < np.inf else scene.bg_color
-            
-            # k_t scales all light that passes through, including TIR
-            color += k_t_eff * refl_color
-        
+            new_dir = refl
         else:
-            # Both Refraction and Reflection (Fresnel)
-            
-            # 1. Reflected ray
-            refl_dir = v_incoming - 2.0 * np.dot(v_incoming, n_incident) * n_incident
-            refl_ray = Ray(hit_point + EPSILON * refl_dir, normalize(refl_dir), start=EPSILON)
-            
-            refl_hit = scene.intersect(refl_ray)
-            refl_color = shade(refl_ray, refl_hit, scene, lights, depth + 1) if refl_hit.t < np.inf else scene.bg_color
-            
-            # 2. Refracted ray (using standard Snell's Law formula)
-            refr_dir = eta * v_incoming + (eta * cos_in - np.sqrt(k)) * n_incident
-            refr_ray = Ray(hit_point + EPSILON * refr_dir, normalize(refr_dir), start=EPSILON)
-            
-            refr_hit = scene.intersect(refr_ray)
-            refr_color = shade(refr_ray, refr_hit, scene, lights, depth + 1) if refr_hit.t < np.inf else scene.bg_color
+            if np.random.rand() < F: # fresnel reflection
+                new_dir = refl
+            else:
+                refr = eta * wi + (eta*cos_i - np.sqrt(k)) * nl
+                new_dir = normalize(refr)
+        
+        return emitted + trace_path(Ray(x + EPSILON*new_dir, new_dir), scene, depth+1, is_specular=True)
 
-            # 3. Combine using Fresnel and k_t
-            fresnel_blend = (reflectance * refl_color) + ((1.0 - reflectance) * refr_color)
-            color += k_t_eff * fresnel_blend
+    elif r < pt + pm:
+        refl = normalize(wo - 2*np.dot(wo, nl)*nl)
+        return emitted + trace_path(Ray(x + EPSILON*refl, refl), scene, depth+1, is_specular=True)
+
+    else:
+        # importance sample the lights (NEE)
+        direct_light = np.zeros(3)
+        if len(scene.lights) > 0:
+            light = scene.lights[0]
             
-    return color
+            # get a random point on the light source
+            (light_point, light_normal, light_pdf_area) = sample_point_on_sphere(light)
+            
+            to_light_vec = light_point - x
+            dist_sq = np.dot(to_light_vec, to_light_vec)
+            dist = np.sqrt(dist_sq)
+            wi = to_light_vec / dist
+
+            shadow_ray = Ray(x + EPSILON*wi, wi, end=(dist - EPSILON*2.0))
+            if not scene.is_occluded(shadow_ray):
+                
+                cos_at_surface = max(0.0, np.dot(nl, wi))
+                cos_at_light   = max(0.0, np.dot(light_normal, -wi))
+
+                if cos_at_surface > 0 and cos_at_light > 0:
+                    G = (cos_at_surface * cos_at_light) / dist_sq
+                    
+                    # diffuse BRDF
+                    f_r = mat.k_d / np.pi
+                    L_e = light.material.k_e
+                    
+                    # (BRDF * Emission * Geometry) / PDF
+                    direct_light = (f_r * L_e * G) / light_pdf_area
+
+        u, v = create_orthonormal_basis(nl)
+        new_dir = sample_cosine_hemisphere(nl, u, v)
+        new_ray = Ray(x + EPSILON * new_dir, new_dir)
+
+        # russian roulette
+        p = max(0.2, kd)
+        if depth > 3:
+            if np.random.rand() > p:
+                return emitted
+            
+            indirect_light = (mat.k_d * trace_path(new_ray, scene, depth+1, is_specular=False)) / p
+        else:
+            indirect_light = mat.k_d * trace_path(new_ray, scene, depth+1, is_specular=False)
+
+        return emitted + direct_light + indirect_light
 
 
 def render_image(camera, scene, lights, nx, ny):
-    """Render a ray traced image.
-
-    Parameters:
-      camera : Camera -- the camera defining the view
-      scene : Scene -- the scene to be rendered
-      lights : Lights -- the lights illuminating the scene
-      nx, ny : int -- the dimensions of the rendered image
-    Returns:
-      (ny, nx, 3) float32 -- the RGB image
     """
-    output_image = np.zeros((ny,nx,3), np.float32)
+    render a ray traced image.
+    """
+    
+    # quality settings (16 is low, 64 is mediumish)
+    samples_per_pixel = 16
+    
+    # to kill fireflies
+    clamp_value = 2.0
+    
+    output_image = np.zeros((ny, nx, 3), np.float32)
+    
     for i in range(ny):
+        print(f"rendering row {i+1}/{ny}...")
         for j in range(nx):
-            pixel_uv = np.array([ (j + 0.5) / nx , (i + 0.5) / ny ])
             
-            ray = camera.generate_ray(pixel_uv) 
+            pixel_color = np.zeros(3)
+            for s in range(samples_per_pixel):
+                
+                # jittered anti-aliasing
+                u = (j + np.random.rand()) / nx
+                v = (i + np.random.rand()) / ny
+                
+                ray = camera.generate_ray(np.array([u, v]))
+                
+                path_color = trace_path(ray, scene, 0)
+                pixel_color += np.clip(path_color, 0, clamp_value)
             
-            hit = scene.intersect(ray)
-
-            if hit.t < np.inf:
-                color = shade(ray, hit, scene, lights, 0)
-                output_image[i, j] = np.clip(color, 0, 1) 
-            else:
-                output_image[i, j] = scene.bg_color
+            avg_color = pixel_color / samples_per_pixel
+            
+            # gamma correction
+            output_image[i, j] = np.clip(avg_color, 0, 1)**(1.0/2.2)
                 
     return output_image
