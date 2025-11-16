@@ -34,31 +34,47 @@ class Ray:
         self.end = end
 
 class Material:
-    def __init__(self, k_d, k_s=0., p=20., k_m=0., k_a=None, texture_filename=None, k_t=0., ior=1.0, k_e=0.):
-        """Create a new material with the given parameters.
 
+    def __init__(self, k_d, k_s=0., p=20., k_m=0., k_a=None, texture_filename=None, k_t=0., ior=1.0, k_e=0., k_e_texture_filename=None):
+        """
+        Create a new material with the given parameters.
+        
         Parameters:
-          k_d : (3,) -- the diffuse coefficient
-          k_s : (3,) or float -- the specular coefficient
-          p : float -- the specular exponent
-          k_m : (3,) or float -- the mirror reflection coefficient
-          k_a : (3,) -- the ambient coefficient (defaults to match diffuse color)
+          k_d : (3,) -- Diffuse coefficient (color)
+          k_s : (3,) or float -- Specular coefficient
+          p : float -- Specular exponent (shininess)
+          k_m : (3,) or float -- Mirror reflection coefficient
+          k_a : (3,) -- Ambient coefficient (defaults to k_d)
           texture_filename : str -- Path to the texture file
-          k_t : (3,) or float -- Transmission (refraction) coefficient (NEW)
-          ior : float -- Index of Refraction (NEW)
-          k_e : (3,) or float -- Emissive coefficient (glow) (NEW)
+          k_t : (3,) or float -- Transmission (refraction) coefficient
+          ior : float -- Index of Refraction (1.0 for air, 1.5 for glass)
+          k_e : (3,) or float -- Emissive coefficient (base glow)
+          k_e_texture_filename : str -- Path to the emission texture (glow map)
         """
         self.k_d = k_d
         self.k_s = k_s
         self.p = p
         self.k_m = k_m
         self.k_a = k_a if k_a is not None else k_d
-        self.texture_map = None
-        if texture_filename:
-            self.texture_map = load_image(texture_filename)
         self.k_t = k_t
         self.ior = ior
         self.k_e = k_e
+        
+        self.texture_map = None
+        if texture_filename:
+            try:
+                self.texture_map = load_image(texture_filename)
+            except Exception as e:
+                print(f"Warning: Could not load diffuse texture: {texture_filename}")
+                self.texture_map = None
+        
+        self.emission_map = None
+        if k_e_texture_filename:
+            try:
+                self.emission_map = load_image(k_e_texture_filename)
+            except Exception as e:
+                print(f"Warning: Could not load emission texture: {k_e_texture_filename}")
+                self.emission_map = None
 
 class Hit:
     def __init__(self, t, point=None, normal=None, material=None, uv=None):
@@ -393,14 +409,8 @@ class Camera:
 
 
 class PointLight:
-
     def __init__(self, position, intensity):
-        """Create a point light at given position and with given intensity
-
-        Parameters:
-          position : (3,) -- 3D point giving the light source location in scene
-          intensity : (3,) or float -- RGB or scalar intensity of the source
-        """
+        """Create a point light at given position and with given intensity"""
         self.position = position
         self.intensity = intensity
 
@@ -411,11 +421,12 @@ class PointLight:
         
         light_vec = normalize(light_vec_full)
         dist = np.sqrt(dist_sq)
-        eps = 1e-5
+        # Increase epsilon for shadow rays to avoid self-occlusion from numerical error
+        eps = 1e-4
         shadow_ray = Ray(
-            origin=hit.point + eps * hit.normal,
+            origin=hit.point + eps * light_vec,
             direction=light_vec,
-            start=0.0,
+            start=eps,
             end=dist - eps
         )
         if scene.is_occluded(shadow_ray):
@@ -494,105 +505,143 @@ class Scene:
         return self.bvh_root.any_intersect(ray)
 
 
-MAX_DEPTH = 4
+MAX_DEPTH = 8
+EPSILON = 1e-4 # A consistent epsilon for offsetting rays
+
+def get_texture_color(texture_map, uv):
+    """Helper to get color from a texture map given UVs."""
+    if texture_map is None or uv is None:
+        return None
+    
+    # Handle texture wrapping and V-coordinate flip
+    uv_u = uv[0] % 1.0
+    uv_v = (1.0 - uv[1]) % 1.0 
+    
+    tex_h, tex_w, _ = texture_map.shape
+    tex_x = int(uv_u * (tex_w - 1))
+    tex_y = int(uv_v * (tex_h - 1))
+    
+    return texture_map[tex_y, tex_x]
 
 def shade(ray, hit, scene, lights, depth=0):
-    """Compute shading for a ray-surface intersection."""
-    color = np.array([0.0, 0.0, 0.0])
+    """
+    Compute shading for a ray-surface intersection.
+    This version uses a cleaner, more standard algorithm for refraction.
+    """
+    
+    # Stop recursion at max depth
+    if depth >= MAX_DEPTH:
+        return np.zeros(3)
+
+    # --- 1. Setup ---
     mat = hit.material
-    tex_color = None
-    if mat.texture_map is not None and hit.uv is not None:
-        tex_map = mat.texture_map
-        uv = hit.uv
-        u_coord = uv[0] % 1.0
-        v_coord = (1.0 - uv[1]) % 1.0
-        
-        tex_h, tex_w, _ = tex_map.shape
-        x = int(u_coord * (tex_w - 1))
-        y = int(v_coord * (tex_h - 1))
-        
-        tex_color = tex_map[y, x]
-  
+    hit_point = hit.point
+    hit_norm = hit.normal
+    
+    # --- 2. Get Effective Material Properties (from Textures) ---
+    tex_color = get_texture_color(mat.texture_map, hit.uv)
+    emit_color = get_texture_color(mat.emission_map, hit.uv)
+    
     k_d_eff = tex_color if tex_color is not None else mat.k_d
-    k_s_eff = mat.k_s
-    p_eff = mat.p
-    k_m_eff = mat.k_m
     k_a_eff = mat.k_a
     if tex_color is not None and np.array_equal(mat.k_a, mat.k_d):
-        k_a_eff = tex_color
+        k_a_eff = tex_color # Allow ambient to match diffuse texture
+        
+    k_e_eff = mat.k_e + (emit_color if emit_color is not None else 0.0)
     
-    k_t_eff = mat.k_t
-    ior_eff = mat.ior
-    k_e_eff = mat.k_e
+    # --- 3. Local Illumination (Emission + Phong/Blinn-Phong) ---
+    
+    # Start with emission
+    # Ensure color is always a (3,) array, even if k_e_eff is a scalar
+    color = np.array([0.0, 0.0, 0.0]) + k_e_eff
+    
+    # Add diffuse and specular from lights
     for light in lights:
-        color += light.illuminate(ray, hit, scene, k_a_eff, k_d_eff, k_s_eff, p_eff)
+        color += light.illuminate(ray, hit, scene, k_a_eff, k_d_eff, mat.k_s, mat.p)
 
-    hit_norm = hit.normal
-    view_vec = normalize(ray.origin - hit.point)
-    eps = 1e-5 
-
-    if np.any(k_m_eff > 0) and depth < MAX_DEPTH:
-        reflection_dir = normalize(2.0 * np.dot(view_vec, hit_norm) * hit_norm - view_vec)
-        reflection_ray = Ray(origin=hit.point + eps * hit_norm, direction=reflection_dir)
+    # --- 4. Recursive Rays (Reflection & Refraction) ---
+    
+    # Vector from surface point *to* the eye
+    view_vec = normalize(ray.origin - hit_point)
+    # Vector *from* the eye *into* the surface
+    v_incoming = normalize(-view_vec)
+    
+    # --- Mirror Reflection (k_m) ---
+    k_m_eff = np.array(mat.k_m)
+    if np.any(k_m_eff > 0):
+        refl_dir = normalize(2.0 * np.dot(view_vec, hit_norm) * hit_norm - view_vec)
+        refl_ray = Ray(hit_point + EPSILON * refl_dir, refl_dir, start=EPSILON)
         
-        reflection_hit = scene.intersect(reflection_ray)
-        if reflection_hit.t < np.inf:
-            reflection_color = shade(reflection_ray, reflection_hit, scene, lights, depth + 1)
+        refl_hit = scene.intersect(refl_ray)
+        refl_color = shade(refl_ray, refl_hit, scene, lights, depth + 1) if refl_hit.t < np.inf else scene.bg_color
+        
+        color += k_m_eff * refl_color
+
+    # --- Transmission / Refraction (k_t) ---
+    k_t_eff = np.array(mat.k_t)
+    if np.any(k_t_eff > 0):
+        
+        cos_in = np.dot(v_incoming, hit_norm)
+        
+        eta1 = 1.0    # IOR of current medium (default: air)
+        eta2 = mat.ior  # IOR of next medium
+        n_incident = hit_norm # Normal to use for calculations
+
+        if cos_in < 0:
+            # Ray is ENTERING the medium (e.g., air -> glass)
+            # - cos_in is negative, make it positive
+            # - IORs are correct (1.0 -> 1.5)
+            # - Normal is correct
+            cos_in = -cos_in
         else:
-            reflection_color = scene.bg_color
-        color += np.array(k_m_eff) * reflection_color
+            # Ray is EXITING the medium (e.g., glass -> air)
+            # - cos_in is positive, which is fine
+            # - Swap IORs (1.5 -> 1.0)
+            # - Flip the normal to point "inward"
+            eta1, eta2 = eta2, eta1
+            n_incident = -hit_norm
+            
+        eta = eta1 / eta2
         
-    if np.any(k_t_eff > 0) and depth < MAX_DEPTH:
-        eta_in = 1.0
-        eta_out = ior_eff 
+        # Schlick's approximation for Fresnel reflectance
+        R0 = ((eta1 - eta2) / (eta1 + eta2))**2
+        reflectance = R0 + (1.0 - R0) * ((1.0 - cos_in)**5)
         
-        cos_i = np.dot(hit_norm, view_vec)
-        
-        incident_norm = hit_norm
-        if cos_i < 0:
-            cos_i = -cos_i
-            eta_in, eta_out = eta_out, eta_in
-            incident_norm = -hit_norm
-        
-        eta = eta_in / eta_out
-        k = 1.0 - eta*eta * (1.0 - cos_i*cos_i)
-        
-        R0 = ((eta_in - eta_out) / (eta_in + eta_out))**2
-        reflectance = R0 + (1.0 - R0) * (1.0 - cos_i)**5
+        # Check for Total Internal Reflection (TIR)
+        k = 1.0 - eta * eta * (1.0 - cos_in * cos_in)
         
         if k < 0:
-            reflection_dir = normalize(view_vec - 2.0 * np.dot(view_vec, incident_norm) * incident_norm)
-            reflection_ray = Ray(origin=hit.point + eps * incident_norm, direction=reflection_dir)
-            reflection_hit = scene.intersect(reflection_ray)
-            if reflection_hit.t < np.inf:
-                reflection_color = shade(reflection_ray, reflection_hit, scene, lights, depth + 1)
-            else:
-                reflection_color = scene.bg_color
-            color += np.array(k_t_eff) * reflection_color
+            # Total Internal Reflection: Only trace reflection
+            refl_dir = v_incoming - 2.0 * np.dot(v_incoming, n_incident) * n_incident
+            refl_ray = Ray(hit_point + EPSILON * refl_dir, normalize(refl_dir), start=EPSILON)
+            
+            refl_hit = scene.intersect(refl_ray)
+            refl_color = shade(refl_ray, refl_hit, scene, lights, depth + 1) if refl_hit.t < np.inf else scene.bg_color
+            
+            # k_t scales all light that passes through, including TIR
+            color += k_t_eff * refl_color
         
         else:
-            refraction_dir = normalize(eta * (view_vec - incident_norm * cos_i) - incident_norm * np.sqrt(k))
-            refraction_ray = Ray(origin=hit.point - eps * incident_norm, direction=refraction_dir) # Move origin "inside"
+            # Both Refraction and Reflection (Fresnel)
             
-            refraction_hit = scene.intersect(refraction_ray)
-            if refraction_hit.t < np.inf:
-                refraction_color = shade(refraction_ray, refraction_hit, scene, lights, depth + 1)
-            else:
-                refraction_color = scene.bg_color
+            # 1. Reflected ray
+            refl_dir = v_incoming - 2.0 * np.dot(v_incoming, n_incident) * n_incident
+            refl_ray = Ray(hit_point + EPSILON * refl_dir, normalize(refl_dir), start=EPSILON)
             
-            reflection_dir = normalize(view_vec - 2.0 * cos_i * incident_norm)
-            reflection_ray = Ray(origin=hit.point + eps * incident_norm, direction=reflection_dir) # Move origin "outside"
+            refl_hit = scene.intersect(refl_ray)
+            refl_color = shade(refl_ray, refl_hit, scene, lights, depth + 1) if refl_hit.t < np.inf else scene.bg_color
             
-            reflection_hit = scene.intersect(reflection_ray)
-            if reflection_hit.t < np.inf:
-                reflection_color = shade(reflection_ray, reflection_hit, scene, lights, depth + 1)
-            else:
-                reflection_color = scene.bg_color
+            # 2. Refracted ray (using standard Snell's Law formula)
+            refr_dir = eta * v_incoming + (eta * cos_in - np.sqrt(k)) * n_incident
+            refr_ray = Ray(hit_point + EPSILON * refr_dir, normalize(refr_dir), start=EPSILON)
+            
+            refr_hit = scene.intersect(refr_ray)
+            refr_color = shade(refr_ray, refr_hit, scene, lights, depth + 1) if refr_hit.t < np.inf else scene.bg_color
 
-            color += np.array(k_t_eff) * (reflectance * reflection_color + (1.0 - reflectance) * refraction_color)
-
-    color += np.array(k_e_eff)
-        
+            # 3. Combine using Fresnel and k_t
+            fresnel_blend = (reflectance * refl_color) + ((1.0 - reflectance) * refr_color)
+            color += k_t_eff * fresnel_blend
+            
     return color
 
 
