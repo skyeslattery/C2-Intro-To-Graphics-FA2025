@@ -8,7 +8,7 @@ from ray import *
 # lucario material
 pokemon_mat = Material(
     k_d=vec([1.0, 1.0, 1.0]),
-    texture_filename="grey-texture.png",
+    texture_filename="./assets/grey-texture.png",
     k_s=vec([0.02, 0.02, 0.02]),
     p=10.0,
     k_m=0.0
@@ -24,7 +24,7 @@ gray_mat = Material(
 ball_mat = Material(
     k_d=vec([0.0, 0.0, 0.0]),
     k_s=vec([0.3, 0.3, 0.3]),
-    texture_filename="plasma-texture.png",
+    texture_filename="./assets/plasma-texture.png",
     p=200.0,
     k_e=vec([0.2, 0.5, 1.0]),  # emission
     k_t=vec([0.8, 0.9, 1.0]), # transparency
@@ -37,7 +37,7 @@ rim_light_mat = Material(
     k_d=vec([0,0,0])
 )
 
-vs_list_raw, uvs_list = read_obj_triangles_with_uvs(open("Lucario2.obj"))
+vs_list_raw, uvs_list = read_obj_triangles_with_uvs(open("./assets/Lucario2.obj"))
 
 vs_list = 0.6 * vs_list_raw + vec([0, -0.05, -0.2])
 all_verts = np.vstack(vs_list)
@@ -54,7 +54,7 @@ surfs.append(Sphere(vec([0, -40.0, 0]), 40.0, gray_mat))
 
 # energy ball
 ball_pos = vec([-0.31, 0.81, 0.04])
-ball_rad = 0.1
+ball_rad = 0.07
 surfs.append(Sphere(ball_pos, ball_rad, ball_mat))
 rim_light_pos = center + vec([radius * 1.0, extents[1] * 1.5, -radius * 2.0])
 surfs.append(Sphere(rim_light_pos, 0.5, rim_light_mat))

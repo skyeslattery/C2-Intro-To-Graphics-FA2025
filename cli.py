@@ -33,5 +33,5 @@ def render(camera, scene, lights, flipY=False):
     img = render_image(camera, scene, lights, args.nx, ny)
 
     cam_img_ui8 = to_srgb8(img / args.white)
-    Image.fromarray(cam_img_ui8, 'RGB').save(args.outFile)
+    Image.fromarray(cam_img_ui8, 'RGB').save("renders/" + args.outFile)
     # Image.fromarray(cam_img_ui8[::-1,:,:], 'RGB').save(args.outFile)
