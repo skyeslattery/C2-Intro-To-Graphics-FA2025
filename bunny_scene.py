@@ -8,7 +8,7 @@ gray = Material(vec([0.2, 0.2, 0.2]), k_m=0.4)
 
 print("Loading bunny.obj...")
 try:
-    vs_list = 10.0 * read_obj_triangles(open("bunny.obj")) + vec([0, 0.1, 0])
+    vs_list = 10.0 * read_obj_triangles(open("assets/bunny.obj")) + vec([0, 0.1, 0])
 except FileNotFoundError:
     print("="*50)
     print("ERROR: bunny.obj not found!")

@@ -4,12 +4,12 @@ from ray import *
 from cli import render
 
 
-TEXTURE_FILE = "WoodFloor.png"
+TEXTURE_FILE = "assets/WoodFloor.png"
 
 textured_mat = Material(k_d=vec([1, 1, 1]), k_s=0.3, p=90, k_m=0.3, texture_filename=TEXTURE_FILE)
 gray = Material(vec([0.2, 0.2, 0.2]), k_m=0.4)
 
-vs_list, uvs_list = read_obj_triangles_with_uvs(open("cube.obj"))
+vs_list, uvs_list = read_obj_triangles_with_uvs(open("assets/cube.obj"))
 vs_list = 0.5 * vs_list
 
 print(f"Loaded {len(vs_list)} triangles.")

@@ -14,8 +14,10 @@ def from_srgb(img_srgb):
     return np.where(img_srgb > 0.04045, ((img_srgb + 0.055) / 1.055)**2.4, img_srgb / 12.92).astype(np.float32)
 
 def to_srgb(img):
-    img_clip = np.clip(img, 0, 1)
-    return np.where(img > 0.0031308, (1.055 * img_clip**(1/2.4) - 0.055), 12.92 * img_clip)
+    # For the firefly demo we intentionally do not clamp HDR values here
+    # so very bright samples can survive and appear as saturated pixels.
+    # The final conversion to 8-bit will clamp to [0,255].
+    return np.where(img > 0.0031308, (1.055 * img**(1/2.4) - 0.055), 12.92 * img)
 
 def from_srgb8(img_srgb8):
     return from_srgb(img_srgb8 / 255.0)
