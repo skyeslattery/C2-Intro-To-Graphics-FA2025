@@ -22,7 +22,7 @@ gray_mat = Material(
 
 # energy ball material
 ball_mat = Material(
-    k_d=vec([0.0, 0.0, 0.0]),
+    k_d=vec([0.3, 0.3, 0.3]),
     k_s=vec([0.3, 0.3, 0.3]),
     texture_filename="./assets/plasma-texture.png",
     p=200.0,
@@ -33,7 +33,7 @@ ball_mat = Material(
 
 # rim light
 rim_light_mat = Material(
-    k_e=vec([0.5, 0.5, 0.8]),
+    k_e=vec([0.1, 0.1, 0.2]),
     k_d=vec([0,0,0])
 )
 
@@ -50,11 +50,11 @@ radius = np.linalg.norm(extents) * 0.5
 surfs = [Triangle(vs, pokemon_mat, uvs) for vs, uvs in zip(vs_list, uvs_list)]
 
 # ground plane (a big sphere)
-surfs.append(Sphere(vec([0, -40.0, 0]), 40.0, gray_mat))
+surfs.append(Sphere(vec([0, -40.1, 0]), 40.0, gray_mat))
 
 # energy ball
-ball_pos = vec([-0.31, 0.81, 0.04])
-ball_rad = 0.07
+ball_pos = vec([-0.31, 0.82, 0.04])
+ball_rad = 0.06
 surfs.append(Sphere(ball_pos, ball_rad, ball_mat))
 rim_light_pos = center + vec([radius * 1.0, extents[1] * 1.5, -radius * 2.0])
 surfs.append(Sphere(rim_light_pos, 0.5, rim_light_mat))

@@ -5,16 +5,7 @@ from bvh import build_bvh
 from utils import *
 
 """
-Core implementation of the ray tracer.  This module contains the classes (Sphere, Mesh, etc.)
-that define the contents of scenes, as well as classes (Ray, Hit) and functions (shade) used in 
-the rendering algorithm, and the main entry point `render_image`.
-
-In the documentation of these classes, we indicate the expected types of arguments with a
-colon, and use the convention that just writing a tuple means that the expected type is a
-NumPy array of that shape.  Implementations can assume these types are preconditions that
-are met, and if they fail for other type inputs it's an error of the caller.  (This might 
-not be the best way to handle such validation in industrial-strength code but we are adopting
-this rule to keep things simple and efficient.)
+Core implementation of the ray tracer.
 """
 
 
@@ -22,14 +13,7 @@ class Ray:
 
     def __init__(self, origin, direction, start=0., end=np.inf):
         """Create a ray with the given origin and direction.
-
-        Parameters:
-          origin : (3,) -- the start point of the ray, a 3D point
-          direction : (3,) -- the direction of the ray, a 3D vector (not necessarily normalized)
-          start, end : float -- the minimum and maximum t values for intersections
         """
-        # Convert these vectors to double to help ensure intersection
-        # computations will be done in double precision
         self.origin = np.array(origin, np.float64)
         self.direction = np.array(direction, np.float64)
         self.start = start
@@ -40,13 +24,6 @@ class Camera:
     def __init__(self, eye=vec([0,0,0]), target=vec([0,0,-1]), up=vec([0,1,0]), 
                  vfov=90.0, aspect=1.0):
         """Create a camera with given viewing parameters.
-
-        Parameters:
-          eye : (3,) -- the camera's location, aka viewpoint (a 3D point)
-          target : (3,) -- where the camera is looking: a 3D point that appears centered in the view
-          up : (3,) -- the camera's orientation: a 3D vector that appears straight up in the view
-          vfov : float -- the full vertical field of view in degrees
-          aspect : float -- the aspect ratio of the camera's view (ratio of width to height)
         """
         self.eye = eye
         self.aspect = aspect
@@ -63,12 +40,6 @@ class Camera:
 
     def generate_ray(self, img_point):
         """Compute the ray corresponding to a point in the image.
-
-        Parameters:
-          img_point : (2,) -- a 2D point in [0,1] x [0,1], where (0,0) is the upper left
-                      corner of the image and (1,1) is the lower right.
-        Return:
-          Ray -- The ray corresponding to that image location (not necessarily normalized)
         """
         alpha = self.img_w_half * (img_point[0] * 2.0 - 1.0)
         beta = self.img_h_half * (1.0 - img_point[1] * 2.0)
@@ -91,7 +62,6 @@ class PointLight:
         
         light_vec = normalize(light_vec_full)
         dist = np.sqrt(dist_sq)
-        # Increase epsilon for shadow rays to avoid self-occlusion from numerical error
         eps = 1e-4
         shadow_ray = Ray(
             origin=hit.point + eps * light_vec,
@@ -102,7 +72,7 @@ class PointLight:
         if scene.is_occluded(shadow_ray):
             return np.zeros(3)
 
-        # Shading
+        # shading
         normal_hit = hit.normal
         view_vec = normalize(ray.origin - hit.point)
         halfway_vec = normalize(light_vec + view_vec)
@@ -112,29 +82,20 @@ class PointLight:
         diffuse = max(0.0, np.dot(normal_hit, light_vec))
         specular  = k_s * (max(0.0, np.dot(normal_hit, halfway_vec)) ** p)
 
+        # Use the passed-in k_d, which might be from a texture
         return (k_d * diffuse + specular) * intensity_attenuated
 
 class AmbientLight:
 
     def __init__(self, intensity):
         """Create an ambient light of given intensity
-
-        Parameters:
-          intensity (3,) or float: the intensity of the ambient light
         """
         self.intensity = intensity
 
     def illuminate(self, ray, hit, scene, k_a, k_d, k_s, p):
         """Compute the shading at a surface point due to this light.
-
-        Parameters:
-          ray : Ray -- the ray that hit the surface
-          hit : Hit -- the hit data
-          scene : Scene -- the scene, for shadow rays
-          k_a, k_d, k_s, p : Material properties -- effective material properties at the hit point
-        Return:
-          (3,) -- the light reflected from the surface
         """
+        # Use the passed-in k_a
         return k_a * self.intensity
 
 
@@ -142,7 +103,6 @@ class Scene:
 
     def __init__(self, surfs, bg_color=vec([0.2,0.3,0.5])):
         """Create a scene containing the given objects.
-        ...
         """
         self.surfs = surfs
         self.bg_color = bg_color
@@ -154,14 +114,11 @@ class Scene:
 
         if len(self.surfs) > 0:
             self.bvh_root = build_bvh(self.surfs)
+        else:
+            self.bvh_root = None # Add this line for safety
 
     def intersect(self, ray):
         """Computes the first (smallest t) intersection between a ray and the scene.
-
-        Parameters:
-          ray : Ray -- the ray to intersect with the scene
-        Return:
-          Hit -- the hit data
         """
         if self.bvh_root is None:
             return no_hit
@@ -234,7 +191,12 @@ def sample_cosine_hemisphere(n, u, v):
     )
     return normalize(direction)
 
-def trace_path(ray, scene, depth, is_specular=False):
+def trace_path(ray, scene, lights, depth, is_specular=False):
+    """
+    Traces a path, now with Next-Event Estimation (NEE)
+    AND texturing
+    AND support for the old 'lights' list.
+    """
     if depth >= MAX_DEPTH:
         return np.zeros(3)
 
@@ -250,18 +212,38 @@ def trace_path(ray, scene, depth, is_specular=False):
 
     # emission
     emitted = mat.k_e
+    
+    em_tex = get_texture_color(mat.emission_map, hit.uv)
+    if em_tex is not None:
+        emitted = emitted * em_tex
+
     if np.any(emitted > 0):
         if depth == 0 or is_specular:
             return emitted
         else:
             return np.zeros(3)
 
-    kd = np.mean(mat.k_d)
+    k_d_color = mat.k_d
+    tex = get_texture_color(mat.texture_map, hit.uv)
+    if tex is not None:
+        k_d_color = tex * mat.k_d
+
+    k_a_eff = mat.k_a if hasattr(mat, 'k_a') else k_d_color
+    k_s_eff = mat.k_s
+    p_eff   = mat.p
+    
+    ext_light = np.zeros(3)
+    for L in lights or []:
+        if hasattr(L, 'illuminate'):
+            ext_light += L.illuminate(ray, hit, scene, k_a_eff, k_d_color, k_s_eff, p_eff)
+
+    # path tracing (surface interaction)
+    kd = np.mean(k_d_color)
     km = np.mean(mat.k_m)
     kt = np.mean(mat.k_t)
     s = kd + km + kt
     if s < 1e-6:
-        return emitted
+        return emitted + ext_light
 
     pd = kd / s
     pm = km / s
@@ -287,28 +269,28 @@ def trace_path(ray, scene, depth, is_specular=False):
 
         refl = normalize(wi - 2 * np.dot(wi, nl) * nl)
 
-        if k < 0:
+        if k < 0: # TIR
             new_dir = refl
         else:
-            if np.random.rand() < F: # fresnel reflection
+            if np.random.rand() < F: # Fresnel reflection
                 new_dir = refl
             else:
                 refr = eta * wi + (eta*cos_i - np.sqrt(k)) * nl
                 new_dir = normalize(refr)
         
-        return emitted + trace_path(Ray(x + EPSILON*new_dir, new_dir), scene, depth+1, is_specular=True)
+        return emitted + ext_light + mat.k_t * trace_path(Ray(x + EPSILON*new_dir, new_dir), scene, lights, depth+1, is_specular=True)
 
+    # mirror (specular)
     elif r < pt + pm:
         refl = normalize(wo - 2*np.dot(wo, nl)*nl)
-        return emitted + trace_path(Ray(x + EPSILON*refl, refl), scene, depth+1, is_specular=True)
+        return emitted + ext_light + mat.k_m * trace_path(Ray(x + EPSILON*refl, refl), scene, lights, depth+1, is_specular=True)
 
     else:
-        # importance sample the lights (NEE)
         direct_light = np.zeros(3)
-        if len(scene.lights) > 0:
-            light = scene.lights[0]
+        num_lights = len(scene.lights)
+        if num_lights > 0:
+            light = scene.lights[np.random.randint(num_lights)]
             
-            # get a random point on the light source
             (light_point, light_normal, light_pdf_area) = sample_point_on_sphere(light)
             
             to_light_vec = light_point - x
@@ -325,13 +307,13 @@ def trace_path(ray, scene, depth, is_specular=False):
                 if cos_at_surface > 0 and cos_at_light > 0:
                     G = (cos_at_surface * cos_at_light) / dist_sq
                     
-                    # diffuse BRDF
-                    f_r = mat.k_d / np.pi
+                    f_r = k_d_color / np.pi
                     L_e = light.material.k_e
                     
-                    # (BRDF * Emission * Geometry) / PDF
-                    direct_light = (f_r * L_e * G) / light_pdf_area
+                    # (BRDF * Emission * Geometry * N) / PDF
+                    direct_light = (f_r * L_e * G * num_lights) / light_pdf_area
 
+        # indirect light (diffuse bounce)
         u, v = create_orthonormal_basis(nl)
         new_dir = sample_cosine_hemisphere(nl, u, v)
         new_ray = Ray(x + EPSILON * new_dir, new_dir)
@@ -340,13 +322,13 @@ def trace_path(ray, scene, depth, is_specular=False):
         p = max(0.2, kd)
         if depth > 3:
             if np.random.rand() > p:
-                return emitted
+                return emitted + ext_light
             
-            indirect_light = (mat.k_d * trace_path(new_ray, scene, depth+1, is_specular=False)) / p
+            indirect_light = (k_d_color * trace_path(new_ray, scene, lights, depth+1, is_specular=False)) / p
         else:
-            indirect_light = mat.k_d * trace_path(new_ray, scene, depth+1, is_specular=False)
+            indirect_light = k_d_color * trace_path(new_ray, scene, lights, depth+1, is_specular=False)
 
-        return emitted + direct_light + indirect_light
+        return emitted + ext_light + direct_light + indirect_light
 
 
 def render_image(camera, scene, lights, nx, ny):
@@ -355,7 +337,7 @@ def render_image(camera, scene, lights, nx, ny):
     """
     
     # quality settings (16 is low, 64 is mediumish)
-    samples_per_pixel = 1
+    samples_per_pixel = 4
     
     # to kill fireflies
     clamp_value = 2.0
@@ -375,7 +357,7 @@ def render_image(camera, scene, lights, nx, ny):
                 
                 ray = camera.generate_ray(np.array([u, v]))
                 
-                path_color = trace_path(ray, scene, 0)
+                path_color = trace_path(ray, scene, lights, 0)
                 pixel_color += np.clip(path_color, 0, clamp_value)
             
             avg_color = pixel_color / samples_per_pixel

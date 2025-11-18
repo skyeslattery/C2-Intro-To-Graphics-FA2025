@@ -8,17 +8,17 @@ gray = Material(k_d=vec([0.35, 0.35, 0.35]), k_m=0.0)
 
 glass = Material(
     # tiny diffuse
-    k_d=vec([0.02, 0.02, 0.02]),
-    k_s=vec([0.7, 0.7, 0.7]),
+    k_d=vec([0.03, 0.03, 0.03]),
+    k_s=vec([0.9, 0.9, 0.9]),
     # small mirror component
-    k_m=vec([0.15, 0.15, 0.15]),
+    k_m=vec([0.35, 0.35, 0.35]),
     # subtle blue tint
     k_t=vec([0.92, 0.95, 1.0]),
-    ior=1.5
+    ior=1.33
 )
 
 light_mat = Material(
-    k_e=vec([1.5, 1.5, 1.5]),
+    k_e=vec([10.5, 10.5, 10.5]),
     k_d=vec([0,0,0]),
 )
 
