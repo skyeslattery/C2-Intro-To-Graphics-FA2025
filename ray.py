@@ -223,26 +223,18 @@ def trace_path(ray, scene, lights, depth, is_specular=False):
         else:
             return np.zeros(3)
 
-    # 2. GET MATERIAL PROPERTIES (WITH TEXTURES)
-    # -----------------------------------------------------
-    
-    # Get diffuse color from texture if it exists
     k_d_color = mat.k_d
     tex = get_texture_color(mat.texture_map, hit.uv)
     if tex is not None:
-        k_d_color = tex * mat.k_d # Modulate base color by texture
+        k_d_color = tex * mat.k_d
 
-    # Get other properties
     k_a_eff = mat.k_a if hasattr(mat, 'k_a') else k_d_color
     k_s_eff = mat.k_s
     p_eff   = mat.p
     
-    # 3. EXPLICIT LIGHTS (Old PointLight/AmbientLight)
-    # -----------------------------------------------------
     ext_light = np.zeros(3)
     for L in lights or []:
         if hasattr(L, 'illuminate'):
-            # Pass the (potentially textured) k_d_color and k_a_eff
             ext_light += L.illuminate(ray, hit, scene, k_a_eff, k_d_color, k_s_eff, p_eff)
 
     # path tracing (surface interaction)
