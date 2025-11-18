@@ -346,7 +346,6 @@ def render_image(camera, scene, lights, nx, ny):
     
     # quality settings (16 is low, 64 is mediumish)
     samples_per_pixel = 4
-
     
     # to kill fireflies
     clamp_value = 2.0
